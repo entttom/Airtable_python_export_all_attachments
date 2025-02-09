@@ -1,58 +1,76 @@
-#Airtable Bulk Download Attachments
-#How do you export attachments from Airtable ?
-#Mass download attachments from Airtable ?
-#Airtable-Bulk-Attachments-Downloader
-#Airtable Bulk Attachments Download using python
-#Use this script to bulk download all Airtable attachments no matter how big they are.
-
+import os
 import requests
 import json
+import imghdr
+import re
 
-base_id = "<<YOUR BASE ID>>"
-table_id = "<<YOUR TABLE ID>>"
-url = "https://api.airtable.com/v0/" + base_id + "/" + table_id
+# API-Schlüssel sicher speichern (empfohlen: als Umgebungsvariable setzen)
+API_KEY = os.getenv("AIRTABLE_API_KEY", "your_airtable_api_key_here")
+BASE_ID = "your_base_id_here"
+TABLE_ID = "your_table_id_here"
+FIELD_NAME = "Rechnungen"  # Name des Attachment-Feldes in Airtable
+FILENAME_FIELD = "Leistung"  # Feld für die Benennung der Dateien
 
-api_key = "<<YOUR API KEY>>"
-headers = {"Authorization": "Bearer " + api_key}
+# Airtable API URL
+URL = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE_ID}"
 
-params = ()
-airtable_records = []
-run = True
-i = 0
-while run is True:
-  URL = "" 
-  response = requests.get(url, params=params, headers=headers)
-  airtable_response = response.json()
-  #print(response.json())
-  airtable_records += (airtable_response['records']) 
+# Sicherer Ordner zum Speichern der Dateien
+SAVE_FOLDER = "Backup_Files"
+os.makedirs(SAVE_FOLDER, exist_ok=True)
 
-  # record no 4  
-  #print(airtable_response['records'][4]['fields']['ss'][0]['url'])
-  
-  #records = list(airtable_response['records'])
-  #airtable_records.append(records)
+def sanitize_filename(filename):
+    """Ersetzt ungültige Zeichen im Dateinamen."""
+    return re.sub(r'[<>:"/\\|?*]', "_", filename)  # Ersetze ungültige Zeichen mit "_"
 
-  for i in airtable_response['records']:
-    #print(i)
-    #print(i['fields'])
+def download_file(url, filename):
+    """Lädt eine Datei von einer URL herunter und speichert sie im Backup-Ordner."""
+    response = requests.get(url, stream=True)
+    response.raise_for_status()  # Fehlermeldung ausgeben, falls der Download fehlschlägt
 
-    #Your attachment Field name ss was my attachment field name
-    if child := i['fields'].get("ss"): 
-        #print(i['fields'].get("Notes").replace(" ", ""))
-        #replace with the filename with Notes field
-        filename = i['fields'].get("Notes").replace(" ", "")
-        print(filename) 
-        print(child[0]['url'])
-        #get the original image url
-        URL = child[0]['url']
-        response = requests.get(URL)
-        open(filename+".jpg", "wb").write(response.content)
+    # Sicheren Dateinamen erstellen
+    safe_filename = sanitize_filename(filename)
+    file_extension = ""
 
-  # as Airtabel get 100 records a time, so more then 100 records need to set this
-  if 'offset' in airtable_response:
-     run = True
-     params = (('offset', airtable_response['offset']),)
-  else:
-     run = False
-     
-#print(airtable_records)
+    # Prüfen, ob der Server die Dateiendung sendet
+    content_type = response.headers.get("Content-Type", "")
+    if "image/jpeg" in content_type:
+        file_extension = ".jpg"
+    elif "image/png" in content_type:
+        file_extension = ".png"
+    elif "application/pdf" in content_type:
+        file_extension = ".pdf"
+    
+    full_filename = os.path.join(SAVE_FOLDER, f"{safe_filename}{file_extension}")
+
+    # Datei in Blöcken speichern, um Speicherplatz zu sparen
+    with open(full_filename, "wb") as file:
+        for chunk in response.iter_content(chunk_size=8192):  # Speichert die gesamte Datei, nicht nur den ersten Chunk
+            file.write(chunk)
+
+    print(f"Heruntergeladen: {full_filename}")
+
+def fetch_attachments():
+    """Holt Anhänge aus Airtable und lädt sie in den Backup-Ordner herunter."""
+    params = {}
+    while True:
+        response = requests.get(URL, headers={"Authorization": f"Bearer {API_KEY}"}, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+        for record in data.get("records", []):
+            fields = record.get("fields", {})
+            attachments = fields.get(FIELD_NAME)
+
+            if attachments:
+                filename = fields.get(FILENAME_FIELD, "file").replace(" ", "_")
+                file_url = attachments[0]["url"]
+                download_file(file_url, filename)
+
+        # Falls es eine "offset"-Markierung gibt, gibt es weitere Einträge -> paginieren
+        if "offset" in data:
+            params = {"offset": data["offset"]}
+        else:
+            break
+
+# Skript starten
+fetch_attachments()
